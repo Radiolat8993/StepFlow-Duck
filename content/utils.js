@@ -5,6 +5,7 @@ const SCRIPT_SOURCE = (() => {
   if (url.includes('auth0.openai.com') || url.includes('auth.openai.com') || url.includes('accounts.openai.com')) return 'signup-page';
   if (url.includes('mail.qq.com')) return 'qq-mail';
   if (url.includes('mail.163.com')) return 'mail-163';
+  if (url.includes('duckduckgo.com/email/settings')) return 'duck-email';
   if (url.includes('chatgpt.com')) return 'chatgpt';
   // VPS panel — detected dynamically since URL is configurable
   return 'vps-panel';
@@ -127,6 +128,34 @@ function fillInput(el, value) {
   el.dispatchEvent(new Event('change', { bubbles: true }));
   console.log(LOG_PREFIX, `Filled input ${el.name || el.id || el.type} with: ${value}`);
   log(`Filled input [${el.name || el.id || el.type || 'unknown'}]`);
+}
+
+/**
+ * Slow type into an input field, character by character with delay.
+ * Simulates realistic typing for the user to see the process.
+ * @param {HTMLInputElement} el
+ * @param {string} value
+ * @param {number} charDelay - ms between each character (default 80)
+ */
+async function slowType(el, value, charDelay = 80) {
+  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value'
+  ).set;
+
+  el.focus();
+  el.dispatchEvent(new Event('focus', { bubbles: true }));
+
+  for (let i = 0; i < value.length; i++) {
+    const partial = value.slice(0, i + 1);
+    nativeInputValueSetter.call(el, partial);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(charDelay);
+  }
+
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  console.log(LOG_PREFIX, `Slow-typed input ${el.name || el.id || el.type} (${value.length} chars)`);
+  log(`Typed input [${el.name || el.id || el.type || 'unknown'}] (${value.length} chars)`);
 }
 
 /**

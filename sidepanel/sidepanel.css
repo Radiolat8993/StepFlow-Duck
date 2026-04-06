@@ -1,5 +1,5 @@
 /* ============================================================
-   MultiPage Automation — Side Panel
+   StepFlow Duck — Side Panel
    Design: Swiss Modernism + Developer Tool
    Font: Inter (UI) + JetBrains Mono (code)
    Themes: Light (default) + Dark (toggle)
@@ -280,6 +280,14 @@ header {
   transition: border-color var(--transition), box-shadow var(--transition);
   min-width: 0;
 }
+.data-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-left: 64px;
+  margin-top: -4px;
+  line-height: 1.4;
+}
+
 .data-input::placeholder { color: var(--text-muted); }
 .data-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 
@@ -355,6 +363,45 @@ header {
 }
 .auto-continue-bar svg { color: var(--orange); flex-shrink: 0; }
 .auto-hint { font-size: 13px; color: var(--orange); flex: 1; font-weight: 500; }
+
+/* Failure Intervention Bar */
+.failure-intervention-bar {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--red-soft);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.failure-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.failure-info svg { color: var(--red); flex-shrink: 0; }
+.failure-msg {
+  font-size: 12px;
+  color: var(--red);
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.failure-countdown {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.failure-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
 
 /* ============================================================
    Steps Section
@@ -465,6 +512,131 @@ header {
 }
 .step-row.completed .step-status { color: var(--green); }
 .step-row.failed .step-status { color: var(--red); }
+
+/* ============================================================
+   Accounts Section
+   ============================================================ */
+
+#accounts-section { margin-bottom: 14px; }
+
+.accounts-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.accounts-header .section-label { flex-shrink: 0; }
+.accounts-header .steps-progress { margin-right: auto; }
+
+.accounts-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.chevron-icon { transition: transform var(--transition); }
+
+.accounts-list {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  max-height: 200px;
+  overflow-y: auto;
+  box-shadow: var(--shadow-sm);
+}
+
+.accounts-list:empty::after {
+  content: 'No accounts yet';
+  display: block;
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.accounts-list::-webkit-scrollbar { width: 5px; }
+.accounts-list::-webkit-scrollbar-track { background: transparent; }
+.accounts-list::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 4px; }
+
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  gap: 8px;
+  animation: fadeIn 120ms ease-out;
+}
+.account-row + .account-row { border-top: 1px solid var(--border-subtle); }
+.account-row:hover { background: var(--bg-hover); }
+
+.account-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.account-email {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+.account-pwd {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.account-pwd:hover { background: var(--bg-elevated); color: var(--text-secondary); }
+.account-pwd[data-hidden="false"] { color: var(--text-primary); background: var(--bg-elevated); }
+
+.account-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.account-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.btn-icon {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.btn-icon:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.btn-icon[data-action="delete"]:hover { color: var(--red); }
+
+.btn-copy-inline {
+  width: 18px;
+  height: 18px;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+.account-row:hover .btn-copy-inline { opacity: 1; }
 
 /* ============================================================
    Log / Console Section

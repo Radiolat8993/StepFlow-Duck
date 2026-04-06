@@ -73,9 +73,10 @@ function getCurrentMailIds() {
 // ============================================================
 
 async function handlePollEmail(step, payload) {
-  const { senderFilters, subjectFilters, maxAttempts, intervalMs } = payload;
+  const { senderFilters, subjectFilters, maxAttempts, intervalMs, allowSeenAfter } = payload;
 
-  log(`Step ${step}: Starting email poll on 163 Mail (max ${maxAttempts} attempts)`);
+  const isRetryMode = typeof allowSeenAfter === 'number';
+  log(`Step ${step}: Starting email poll on 163 Mail (max ${maxAttempts} attempts${isRetryMode ? ', retry mode: allow seen code after ' + allowSeenAfter + ' attempts' : ''})`);
 
   // Click inbox in sidebar to ensure we're in inbox view
   log(`Step ${step}: Waiting for sidebar...`);
@@ -143,10 +144,16 @@ async function handlePollEmail(step, payload) {
 
       if (senderMatch || subjectMatch) {
         const code = extractVerificationCode(subject + ' ' + ariaLabel);
-        if (code && !seenCodes.has(code)) {
+        const isSeen = code && seenCodes.has(code);
+        const allowSeen = isRetryMode && attempt >= allowSeenAfter;
+
+        if (code && (!isSeen || allowSeen)) {
+          if (isSeen && allowSeen) {
+            log(`Step ${step}: Retry mode: reusing seen code ${code} after ${attempt} attempts`, 'warn');
+          }
           seenCodes.add(code);
           persistSeenCodes();
-          const source = useFallback && existingMailIds.has(id) ? 'fallback' : 'new';
+          const source = isSeen ? 'retry-reuse' : (useFallback && existingMailIds.has(id) ? 'fallback' : 'new');
           log(`Step ${step}: Code found: ${code} (${source}, subject: ${subject.slice(0, 40)})`, 'ok');
 
           // Delete this email via right-click menu, WAIT for it to finish before returning
@@ -155,7 +162,7 @@ async function handlePollEmail(step, payload) {
           await sleep(1000);
 
           return { ok: true, code, emailTimestamp: Date.now(), mailId: id };
-        } else if (code && seenCodes.has(code)) {
+        } else if (isSeen && !allowSeen) {
           log(`Step ${step}: Skipping already-seen code: ${code}`, 'info');
         }
       }
@@ -182,20 +189,24 @@ async function handlePollEmail(step, payload) {
 
 async function deleteEmail(item, step) {
   try {
-    log(`Step ${step}: Deleting email...`);
+    log(`Step ${step}: Preparing to delete email...`);
+    await sleep(1500);
 
     // Strategy 1: Click the trash icon inside the mail item
     // Each mail item has: <b class="nui-ico nui-ico-delete" title="删除邮件" sign="trash">
     // These icons appear on hover, so we trigger mouseover first
     item.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     item.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await sleep(300);
+    log(`Step ${step}: Hovering over email item...`);
+    await sleep(1000);
 
     const trashIcon = item.querySelector('[sign="trash"], .nui-ico-delete, [title="删除邮件"]');
     if (trashIcon) {
+      log(`Step ${step}: Found trash icon, clicking...`);
+      await sleep(800);
       trashIcon.click();
       log(`Step ${step}: Clicked trash icon`, 'ok');
-      await sleep(1500);
+      await sleep(2000);
 
       // Check if item disappeared (confirm deletion)
       const stillExists = document.getElementById(item.id);
@@ -211,16 +222,20 @@ async function deleteEmail(item, step) {
     log(`Step ${step}: Trash icon not found, trying checkbox + toolbar delete...`);
     const checkbox = item.querySelector('[sign="checkbox"], .nui-chk');
     if (checkbox) {
+      await sleep(800);
       checkbox.click();
-      await sleep(300);
+      log(`Step ${step}: Checked email item`);
+      await sleep(1000);
 
       // Click toolbar delete button
       const toolbarBtns = document.querySelectorAll('.nui-btn .nui-btn-text');
       for (const btn of toolbarBtns) {
         if (btn.textContent.replace(/\s/g, '').includes('删除')) {
+          log(`Step ${step}: Found toolbar delete button, clicking...`);
+          await sleep(800);
           btn.closest('.nui-btn').click();
           log(`Step ${step}: Clicked toolbar delete`, 'ok');
-          await sleep(1500);
+          await sleep(2000);
           return;
         }
       }

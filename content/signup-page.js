@@ -9,7 +9,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleCommand(message).then(() => {
       sendResponse({ ok: true });
     }).catch(err => {
-      reportError(message.step, err.message);
+      // Retryable errors: don't reportError (which marks step as failed)
+      const retryable = err.message === 'PHONE_PAGE_DETECTED' || err.message === 'ERROR_PAGE_DETECTED';
+      if (!retryable) {
+        reportError(message.step, err.message);
+      }
       sendResponse({ error: err.message });
     });
     return true;
@@ -59,6 +63,8 @@ async function step2_clickRegister() {
     }
   }
 
+  log('Step 2: Found Register button, waiting before click...');
+  await sleep(2500);
   reportComplete(2);
   simulateClick(registerBtn);
   log('Step 2: Clicked Register button');
@@ -85,8 +91,9 @@ async function step3_fillEmailPassword(payload) {
     throw new Error('Could not find email input field on signup page. URL: ' + location.href);
   }
 
-  fillInput(emailInput, email);
+  await slowType(emailInput, email, 60);
   log('Step 3: Email filled');
+  await sleep(800);
 
   // Check if password field is on the same page
   let passwordInput = document.querySelector('input[type="password"]');
@@ -111,11 +118,13 @@ async function step3_fillEmailPassword(payload) {
   }
 
   if (!payload.password) throw new Error('No password provided. Step 3 requires a generated password.');
-  fillInput(passwordInput, payload.password);
+  await slowType(passwordInput, payload.password, 80);
   log('Step 3: Password filled');
 
   // Report complete BEFORE submit, because submit causes page navigation
   // which kills the content script connection
+  log('Step 3: Form filled, pausing to show result...');
+  await sleep(2500);
   reportComplete(3, { email });
 
   // Submit the form (page will navigate away after this)
@@ -155,17 +164,19 @@ async function fillVerificationCode(step, payload) {
         fillInput(singleInputs[i], code[i]);
         await sleep(100);
       }
-      await sleep(1000);
+      log(`Step ${step}: Code filled in single-digit inputs, pausing...`);
+      await sleep(2500);
       reportComplete(step);
       return;
     }
     throw new Error('Could not find verification code input. URL: ' + location.href);
   }
 
-  fillInput(codeInput, code);
-  log(`Step ${step}: Code filled`);
+  await slowType(codeInput, code, 150);
+  log(`Step ${step}: Code filled, pausing to show result...`);
 
   // Report complete BEFORE submit (page may navigate away)
+  await sleep(2500);
   reportComplete(step);
 
   // Submit
@@ -184,9 +195,37 @@ async function fillVerificationCode(step, payload) {
 // ============================================================
 
 async function step6_login(payload) {
-  const { email, password } = payload;
-  if (!email) throw new Error('No email provided for login.');
+  const { email, password, phase } = payload;
 
+  // Phase 2: password page (after page navigation from email submit)
+  if (phase === 'password') {
+    log('Step 6: On password page, looking for password field...');
+    let passwordInput = null;
+    try {
+      passwordInput = await waitForElement('input[type="password"]', 15000);
+    } catch {
+      throw new Error('Could not find password input on password page. URL: ' + location.href);
+    }
+
+    log('Step 6: Password field found, filling password...');
+    await slowType(passwordInput, password, 80);
+
+    await sleep(500);
+    const submitBtn = document.querySelector('button[type="submit"]')
+      || await waitForElementByText('button', /continue|log\s*in|submit|sign\s*in|登录|继续/i, 5000).catch(() => null);
+    log('Step 6: Password filled, pausing to show result...');
+    await sleep(2500);
+    reportComplete(6, { needsOTP: true });
+
+    if (submitBtn) {
+      simulateClick(submitBtn);
+      log('Step 6: Submitted password, may need verification code (step 7)');
+    }
+    return;
+  }
+
+  // Phase 1 (default): email page
+  if (!email) throw new Error('No email provided for login.');
   log(`Step 6: Logging in with ${email}...`);
 
   // Wait for email input on the auth page
@@ -200,11 +239,11 @@ async function step6_login(payload) {
     throw new Error('Could not find email input on login page. URL: ' + location.href);
   }
 
-  fillInput(emailInput, email);
+  await slowType(emailInput, email, 60);
   log('Step 6: Email filled');
+  await sleep(800);
 
   // Submit email
-  await sleep(500);
   const submitBtn1 = document.querySelector('button[type="submit"]')
     || await waitForElementByText('button', /continue|next|submit|继续|下一步/i, 5000).catch(() => null);
   if (submitBtn1) {
@@ -214,16 +253,17 @@ async function step6_login(payload) {
 
   await sleep(2000);
 
-  // Check for password field
+  // Check if password field appeared on the same page (SPA, no navigation)
   const passwordInput = document.querySelector('input[type="password"]');
   if (passwordInput) {
-    log('Step 6: Password field found, filling password...');
-    fillInput(passwordInput, password);
+    log('Step 6: Password field found on same page, filling password...');
+    await slowType(passwordInput, password, 80);
 
     await sleep(500);
     const submitBtn2 = document.querySelector('button[type="submit"]')
       || await waitForElementByText('button', /continue|log\s*in|submit|sign\s*in|登录|继续/i, 5000).catch(() => null);
-    // Report complete BEFORE submit in case page navigates
+    log('Step 6: Credentials filled, pausing to show result...');
+    await sleep(2500);
     reportComplete(6, { needsOTP: true });
 
     if (submitBtn2) {
@@ -233,9 +273,10 @@ async function step6_login(payload) {
     return;
   }
 
-  // No password field — OTP flow
-  log('Step 6: No password field. OTP flow or auto-redirect.');
-  reportComplete(6, { needsOTP: true });
+  // No password field — page likely navigating to a separate password page
+  // Do NOT call reportComplete here. Background will detect the navigation
+  // and send a phase 2 command to the new content script on the password page.
+  log('Step 6: No password field on this page. Email submitted, waiting for page navigation...');
 }
 
 // ============================================================
@@ -246,7 +287,27 @@ async function step6_login(payload) {
 // Clicking it triggers redirect to localhost URL.
 
 async function step8_clickContinue() {
-  log('Step 8: Looking for OAuth consent "继续" button...');
+  log('Step 8: Checking page state...');
+
+  // Check if we hit the "电话号码是必填项" page
+  const phonePageDetected = document.querySelector('input[autocomplete="tel"], input[type="tel"]')
+    || document.querySelector('form[action*="add-phone"]');
+  const phoneHeading = document.querySelector('h1');
+  const isPhonePage = phonePageDetected || (phoneHeading && /电话号码|phone\s*number/i.test(phoneHeading.textContent));
+
+  if (isPhonePage) {
+    log('Step 8: Detected phone number required page! Will retry login...', 'warn');
+    throw new Error('PHONE_PAGE_DETECTED');
+  }
+
+  // Check if we hit the "糟糕，出错了！" error page (invalid_state etc.)
+  const errorHeading = document.querySelector('h1');
+  const isErrorPage = errorHeading && /糟糕|出错|error|something went wrong/i.test(errorHeading.textContent);
+  const hasInvalidState = document.body.textContent.includes('invalid_state');
+  if (isErrorPage || hasInvalidState) {
+    log('Step 8: Detected error page (invalid_state)! Will retry login...', 'warn');
+    throw new Error('ERROR_PAGE_DETECTED');
+  }
 
   // Wait for the consent page to be ready
   // Look for the submit button with text "继续" or data-dd-action-name="Continue"
@@ -257,6 +318,21 @@ async function step8_clickContinue() {
       10000
     );
   } catch {
+    // Double-check: maybe phone page appeared after waiting
+    const latePhoneCheck = document.querySelector('form[action*="add-phone"]')
+      || document.querySelector('input[type="tel"]');
+    if (latePhoneCheck) {
+      log('Step 8: Phone number page appeared while waiting! Will retry login...', 'warn');
+      throw new Error('PHONE_PAGE_DETECTED');
+    }
+    // Double-check: maybe error page appeared after waiting
+    const lateErrorCheck = document.querySelector('h1');
+    const lateIsError = (lateErrorCheck && /糟糕|出错|error|something went wrong/i.test(lateErrorCheck.textContent))
+      || document.body.textContent.includes('invalid_state');
+    if (lateIsError) {
+      log('Step 8: Error page appeared while waiting! Will retry login...', 'warn');
+      throw new Error('ERROR_PAGE_DETECTED');
+    }
     try {
       continueBtn = await waitForElementByText('button', /继续|Continue/, 5000);
     } catch {
@@ -264,21 +340,64 @@ async function step8_clickContinue() {
     }
   }
 
-  log('Step 8: Found "继续" button, clicking...');
+  // Try clicking "继续" up to 3 times with different methods
+  for (let clickAttempt = 1; clickAttempt <= 3; clickAttempt++) {
+    log(`Step 8: Clicking "继续" (attempt ${clickAttempt})...`);
 
-  // Use native .click() — simulateClick (dispatchEvent) may not trigger form submit
-  continueBtn.click();
-  log('Step 8: Clicked via .click()');
+    // Method 1: native .click()
+    continueBtn.click();
+    log('Step 8: Clicked via .click()');
 
-  // Also try submitting the form directly as a fallback
-  await sleep(500);
-  const form = continueBtn.closest('form');
-  if (form) {
-    form.requestSubmit(continueBtn);
-    log('Step 8: Also triggered form.requestSubmit()');
+    await sleep(500);
+
+    // Method 2: form.requestSubmit()
+    const form = continueBtn.closest('form');
+    if (form) {
+      try {
+        form.requestSubmit(continueBtn);
+        log('Step 8: Triggered form.requestSubmit()');
+      } catch { /* some pages don't support requestSubmit */ }
+    }
+
+    // Method 3: simulateClick (dispatchEvent) as fallback
+    if (clickAttempt >= 2) {
+      simulateClick(continueBtn);
+      log('Step 8: Triggered simulateClick()');
+    }
+
+    log('Step 8: Waiting to check for redirect or error...');
+    await sleep(3000);
+
+    // Check for error pages
+    const postClickHeading = document.querySelector('h1');
+    const postClickIsError = postClickHeading && /糟糕|出错|error|something went wrong/i.test(postClickHeading.textContent);
+    const postClickInvalidState = document.body.textContent.includes('invalid_state')
+      || document.body.textContent.includes('Invalid workspace');
+    if (postClickIsError || postClickInvalidState) {
+      log('Step 8: Error page appeared after clicking "继续"! Will retry login...', 'warn');
+      throw new Error('ERROR_PAGE_DETECTED');
+    }
+
+    // Check if the button is still on the page (meaning click didn't trigger navigation)
+    const stillHere = document.querySelector(
+      'button[type="submit"][data-dd-action-name="Continue"], button[type="submit"]._primary_3rdp0_107'
+    );
+    if (!stillHere) {
+      // Page navigated away — redirect should be happening
+      log('Step 8: Page navigated, waiting for localhost redirect...');
+      break;
+    }
+
+    if (clickAttempt < 3) {
+      log(`Step 8: Button still visible after click, retrying...`, 'warn');
+      // Re-find button in case DOM changed
+      continueBtn = stillHere;
+    } else {
+      log('Step 8: Button still visible after 3 click attempts, redirect may be slow...', 'warn');
+    }
   }
 
-  log('Step 8: Redirecting to localhost... (background will capture URL)');
+  log('Step 8: Waiting for localhost redirect... (background will capture URL)');
 
   // Don't reportComplete — background handles it via webNavigation listener
 }
@@ -309,8 +428,9 @@ async function step5_fillNameBirthday(payload) {
   } catch {
     throw new Error('Could not find name input. URL: ' + location.href);
   }
-  fillInput(nameInput, fullName);
+  await slowType(nameInput, fullName, 80);
   log(`Step 5: Name filled: ${fullName}`);
+  await sleep(800);
 
   // --- Birthday (React Aria DateField with spinbutton segments) ---
   // The date field has three contenteditable divs with role="spinbutton"
@@ -385,6 +505,8 @@ async function step5_fillNameBirthday(payload) {
     || await waitForElementByText('button', /完成|create|continue|finish|done|agree/i, 5000).catch(() => null);
 
   // Report complete BEFORE submit (page navigates to add-phone after this)
+  log('Step 5: Name & birthday filled, pausing to show result...');
+  await sleep(2500);
   reportComplete(5);
 
   if (completeBtn) {

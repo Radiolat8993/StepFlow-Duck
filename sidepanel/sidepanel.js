@@ -22,6 +22,14 @@ const btnClearLog = document.getElementById('btn-clear-log');
 const inputVpsUrl = document.getElementById('input-vps-url');
 const selectMailProvider = document.getElementById('select-mail-provider');
 const inputRunCount = document.getElementById('input-run-count');
+const failureBar = document.getElementById('failure-intervention-bar');
+const failureMsg = document.getElementById('failure-msg');
+const failureCountdown = document.getElementById('failure-countdown');
+const btnFailureRetry = document.getElementById('btn-failure-retry');
+const btnFailureSkip = document.getElementById('btn-failure-skip');
+const btnFailureStop = document.getElementById('btn-failure-stop');
+
+let failureCountdownTimer = null;
 
 // ============================================================
 // Toast Notifications
@@ -76,6 +84,9 @@ async function restoreState() {
     }
     if (state.vpsUrl) {
       inputVpsUrl.value = state.vpsUrl;
+    } else if (inputVpsUrl.value) {
+      // Sync HTML default value to background on first load
+      await chrome.runtime.sendMessage({ type: 'SAVE_SETTING', source: 'sidepanel', payload: { vpsUrl: inputVpsUrl.value } });
     }
     if (state.mailProvider) {
       selectMailProvider.value = state.mailProvider;
@@ -222,12 +233,12 @@ document.querySelectorAll('.step-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const step = Number(btn.dataset.step);
     if (step === 3) {
+      // Email is optional now — Step 3 will auto-generate if not provided
       const email = inputEmail.value.trim();
-      if (!email) {
-        showToast('Please paste email address first', 'warn');
-        return;
-      }
-      await chrome.runtime.sendMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step, email } });
+      await chrome.runtime.sendMessage({
+        type: 'EXECUTE_STEP', source: 'sidepanel',
+        payload: { step, email: email || undefined },
+      });
     } else {
       await chrome.runtime.sendMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step } });
     }
@@ -253,6 +264,48 @@ btnAutoContinue.addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ type: 'RESUME_AUTO_RUN', source: 'sidepanel', payload: { email } });
 });
 
+// Failure intervention buttons
+function sendFailureAction(action) {
+  hideFailureBar();
+  chrome.runtime.sendMessage({ type: 'AUTO_RUN_ACTION', source: 'sidepanel', payload: { action } });
+}
+
+function hideFailureBar() {
+  failureBar.style.display = 'none';
+  if (failureCountdownTimer) {
+    clearInterval(failureCountdownTimer);
+    failureCountdownTimer = null;
+  }
+}
+
+function showFailureBar(step, errorMsg, timeoutMs) {
+  failureMsg.textContent = `Step ${step} failed: ${errorMsg}`;
+  failureMsg.title = `Step ${step} failed: ${errorMsg}`;
+  failureBar.style.display = '';
+
+  // Countdown
+  let remaining = Math.ceil(timeoutMs / 1000);
+  const updateCountdown = () => {
+    const min = Math.floor(remaining / 60);
+    const sec = remaining % 60;
+    failureCountdown.textContent = `${min}:${String(sec).padStart(2, '0')}`;
+  };
+  updateCountdown();
+
+  failureCountdownTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      hideFailureBar();
+      return;
+    }
+    updateCountdown();
+  }, 1000);
+}
+
+btnFailureRetry.addEventListener('click', () => sendFailureAction('retry'));
+btnFailureSkip.addEventListener('click', () => sendFailureAction('skip'));
+btnFailureStop.addEventListener('click', () => sendFailureAction('stop'));
+
 // Reset
 btnReset.addEventListener('click', async () => {
   if (confirm('Reset all steps and data?')) {
@@ -270,6 +323,7 @@ btnReset.addEventListener('click', async () => {
     btnAutoRun.disabled = false;
     btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Auto';
     autoContinueBar.style.display = 'none';
+    hideFailureBar();
     updateButtonStates();
     updateProgressCounter();
   }
@@ -315,6 +369,10 @@ chrome.runtime.onMessage.addListener((message) => {
       }
       break;
 
+    case 'ACCOUNT_ADDED':
+      loadAccounts();
+      break;
+
     case 'STEP_STATUS_CHANGED': {
       const { step, status } = message.payload;
       updateStepUI(step, status);
@@ -346,7 +404,14 @@ chrome.runtime.onMessage.addListener((message) => {
       logArea.innerHTML = '';
       document.querySelectorAll('.step-row').forEach(row => row.className = 'step-row');
       document.querySelectorAll('.step-status').forEach(el => el.textContent = '');
+      hideFailureBar();
       updateProgressCounter();
+      break;
+    }
+
+    case 'AUTO_RUN_PAUSED': {
+      const { step, error, timeoutMs } = message.payload;
+      showFailureBar(step, error, timeoutMs);
       break;
     }
 
@@ -358,6 +423,9 @@ chrome.runtime.onMessage.addListener((message) => {
       if (message.payload.localhostUrl) {
         displayLocalhostUrl.textContent = message.payload.localhostUrl;
         displayLocalhostUrl.classList.add('has-value');
+      }
+      if (message.payload.email) {
+        inputEmail.value = message.payload.email;
       }
       break;
     }
@@ -378,12 +446,14 @@ chrome.runtime.onMessage.addListener((message) => {
           inputRunCount.disabled = false;
           btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Auto';
           autoContinueBar.style.display = 'none';
+          hideFailureBar();
           break;
         case 'stopped':
           btnAutoRun.disabled = false;
           inputRunCount.disabled = false;
           btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Auto';
           autoContinueBar.style.display = 'none';
+          hideFailureBar();
           break;
       }
       break;
@@ -399,11 +469,11 @@ const btnTheme = document.getElementById('btn-theme');
 
 function setTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('multipage-theme', theme);
+  localStorage.setItem('stepflow-duck-theme', theme);
 }
 
 function initTheme() {
-  const saved = localStorage.getItem('multipage-theme');
+  const saved = localStorage.getItem('stepflow-duck-theme');
   if (saved) {
     setTheme(saved);
   } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
@@ -417,6 +487,137 @@ btnTheme.addEventListener('click', () => {
 });
 
 // ============================================================
+// Accounts Management
+// ============================================================
+
+const accountsList = document.getElementById('accounts-list');
+const accountsCount = document.getElementById('accounts-count');
+const btnExportAccounts = document.getElementById('btn-export-accounts');
+const btnClearAccounts = document.getElementById('btn-clear-accounts');
+const btnToggleAccounts = document.getElementById('btn-toggle-accounts');
+
+let accountsCollapsed = false;
+
+function renderAccountRow(account, index) {
+  const row = document.createElement('div');
+  row.className = 'account-row';
+  row.dataset.index = index;
+
+  const time = new Date(account.createdAt).toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+
+  const copySvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+  row.innerHTML = `
+    <div class="account-info">
+      <span class="account-email" title="${escapeHtml(account.email)}">${escapeHtml(account.email)}</span>
+      <button class="btn-icon btn-copy-inline" data-action="copy-email" title="Copy email">${copySvg}</button>
+      <span class="account-pwd" data-hidden="true" title="Click to reveal">••••••••</span>
+      <button class="btn-icon btn-copy-inline" data-action="copy-pwd" title="Copy password">${copySvg}</button>
+      <span class="account-time">${time}</span>
+    </div>
+    <div class="account-actions">
+      <button class="btn-icon" data-action="copy" title="Copy email:password">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>
+      <button class="btn-icon" data-action="delete" title="Delete">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      </button>
+    </div>
+  `;
+
+  // Toggle password visibility
+  const pwdEl = row.querySelector('.account-pwd');
+  pwdEl.addEventListener('click', () => {
+    if (pwdEl.dataset.hidden === 'true') {
+      pwdEl.textContent = account.password;
+      pwdEl.dataset.hidden = 'false';
+    } else {
+      pwdEl.textContent = '••••••••';
+      pwdEl.dataset.hidden = 'true';
+    }
+  });
+
+  // Copy email
+  row.querySelector('[data-action="copy-email"]').addEventListener('click', () => {
+    navigator.clipboard.writeText(account.email).then(() => {
+      showToast('Email copied', 'success', 2000);
+    });
+  });
+
+  // Copy password
+  row.querySelector('[data-action="copy-pwd"]').addEventListener('click', () => {
+    navigator.clipboard.writeText(account.password).then(() => {
+      showToast('Password copied', 'success', 2000);
+    });
+  });
+
+  // Copy email:password
+  row.querySelector('[data-action="copy"]').addEventListener('click', () => {
+    navigator.clipboard.writeText(`${account.email}:${account.password}`).then(() => {
+      showToast('Copied to clipboard', 'success', 2000);
+    });
+  });
+
+  // Delete
+  row.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+    const result = await chrome.runtime.sendMessage({
+      type: 'DELETE_ACCOUNT', source: 'sidepanel', payload: { index },
+    });
+    if (result.ok) {
+      loadAccounts();
+    }
+  });
+
+  return row;
+}
+
+async function loadAccounts() {
+  const result = await chrome.runtime.sendMessage({ type: 'GET_ACCOUNTS', source: 'sidepanel' });
+  const accounts = result.accounts || [];
+  accountsList.innerHTML = '';
+  // Display in reverse order (newest first), but keep original index for delete
+  for (let i = accounts.length - 1; i >= 0; i--) {
+    accountsList.appendChild(renderAccountRow(accounts[i], i));
+  }
+  accountsCount.textContent = accounts.length;
+}
+
+btnToggleAccounts.addEventListener('click', () => {
+  accountsCollapsed = !accountsCollapsed;
+  accountsList.style.display = accountsCollapsed ? 'none' : '';
+  btnToggleAccounts.querySelector('.chevron-icon').style.transform =
+    accountsCollapsed ? 'rotate(-90deg)' : '';
+});
+
+btnExportAccounts.addEventListener('click', async () => {
+  const result = await chrome.runtime.sendMessage({ type: 'GET_ACCOUNTS', source: 'sidepanel' });
+  const accounts = result.accounts || [];
+  if (accounts.length === 0) {
+    showToast('No accounts to export', 'warn');
+    return;
+  }
+  const json = JSON.stringify(accounts, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const date = new Date().toISOString().slice(0, 10);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `accounts-${date}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Exported ${accounts.length} accounts`, 'success', 2000);
+});
+
+btnClearAccounts.addEventListener('click', async () => {
+  if (!confirm('Clear all saved accounts?')) return;
+  await chrome.runtime.sendMessage({ type: 'CLEAR_ACCOUNTS', source: 'sidepanel' });
+  loadAccounts();
+  showToast('Accounts cleared', 'info', 2000);
+});
+
+// ============================================================
 // Init
 // ============================================================
 
@@ -424,3 +625,4 @@ initTheme();
 restoreState().then(() => {
   updateButtonStates();
 });
+loadAccounts();

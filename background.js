@@ -21,6 +21,7 @@ const DEFAULT_STATE = {
   lastEmailTimestamp: null,
   localhostUrl: null,
   flowStartTime: null,
+  incognitoWindowId: null,
   tabRegistry: {},
   logs: [],
   vpsUrl: '',
@@ -39,17 +40,53 @@ async function setState(updates) {
 
 async function resetState() {
   console.log(LOG_PREFIX, 'Resetting all state');
+  // Close incognito window if still open
+  await closeIncognitoWindow();
   // Preserve settings and persistent data across resets
-  const prev = await chrome.storage.session.get(['seenCodes', 'accounts', 'tabRegistry', 'vpsUrl', 'mailProvider']);
+  const prev = await chrome.storage.session.get(['seenCodes', 'tabRegistry', 'vpsUrl', 'mailProvider']);
   await chrome.storage.session.clear();
   await chrome.storage.session.set({
     ...DEFAULT_STATE,
     seenCodes: prev.seenCodes || [],
-    accounts: prev.accounts || [],
+    accounts: [], // accounts now live in chrome.storage.local
     tabRegistry: prev.tabRegistry || {},
     vpsUrl: prev.vpsUrl || '',
     mailProvider: prev.mailProvider || '163',
   });
+}
+
+// ============================================================
+// Persistent Accounts (chrome.storage.local)
+// ============================================================
+
+async function getAccounts() {
+  const data = await chrome.storage.local.get('accounts');
+  return data.accounts || [];
+}
+
+async function saveAccount(account) {
+  const accounts = await getAccounts();
+  accounts.push(account);
+  await chrome.storage.local.set({ accounts });
+  // Broadcast to side panel
+  chrome.runtime.sendMessage({
+    type: 'ACCOUNT_ADDED',
+    payload: account,
+  }).catch(() => {});
+  return accounts;
+}
+
+async function deleteAccount(index) {
+  const accounts = await getAccounts();
+  if (index >= 0 && index < accounts.length) {
+    accounts.splice(index, 1);
+    await chrome.storage.local.set({ accounts });
+  }
+  return accounts;
+}
+
+async function clearAccounts() {
+  await chrome.storage.local.set({ accounts: [] });
 }
 
 /**
@@ -114,6 +151,16 @@ async function getTabId(source) {
   return registry[source]?.tabId || null;
 }
 
+/**
+ * Activate a tab AND focus its parent window to the foreground.
+ */
+async function focusTab(tabId) {
+  const tab = await chrome.tabs.update(tabId, { active: true });
+  if (tab.windowId) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
+}
+
 // ============================================================
 // Command Queue (for content scripts not yet ready)
 // ============================================================
@@ -141,6 +188,37 @@ function flushCommand(source, tabId) {
     chrome.tabs.sendMessage(tabId, pending.message).then(pending.resolve).catch(pending.reject);
     console.log(LOG_PREFIX, `Flushed queued command to ${source} (tab ${tabId})`);
   }
+}
+
+// ============================================================
+// Wait for content script READY signal (used after page navigation)
+// ============================================================
+
+const readyWaiters = new Map(); // source -> { resolve, timer }
+
+function waitForContentScriptReady(source, timeoutMs = 20000) {
+  // If already ready, resolve immediately
+  return new Promise(async (resolve, reject) => {
+    const registry = await getTabRegistry();
+    if (registry[source]?.ready) {
+      resolve();
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      readyWaiters.delete(source);
+      reject(new Error(`Content script on ${source} did not become ready within ${timeoutMs / 1000}s`));
+    }, timeoutMs);
+
+    readyWaiters.set(source, {
+      resolve: () => { clearTimeout(timer); readyWaiters.delete(source); resolve(); },
+    });
+  });
+}
+
+function notifyContentScriptReady(source) {
+  const waiter = readyWaiters.get(source);
+  if (waiter) waiter.resolve();
 }
 
 // ============================================================
@@ -212,6 +290,104 @@ async function reuseOrCreateTab(source, url, options = {}) {
   }
 
   return tab.id;
+}
+
+// ============================================================
+// Incognito Window Management
+// ============================================================
+
+async function createIncognitoTab(source, url) {
+  // Check if extension is allowed in incognito mode
+  const allowed = await chrome.extension.isAllowedIncognitoAccess();
+  if (!allowed) {
+    throw new Error('Extension not allowed in incognito mode. Please enable it in chrome://extensions → Details → "Allow in Incognito".');
+  }
+
+  // Close existing incognito window if any
+  await closeIncognitoWindow();
+
+  // Create new incognito window
+  const win = await chrome.windows.create({ url, incognito: true });
+  const tab = win.tabs[0];
+
+  await setState({ incognitoWindowId: win.id });
+
+  // Register the tab under the given source
+  const registry = await getTabRegistry();
+  registry[source] = { tabId: tab.id, ready: false };
+  await setState({ tabRegistry: registry });
+
+  console.log(LOG_PREFIX, `Created incognito window ${win.id}, tab ${source} (${tab.id})`);
+
+  // Wait for page load
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 30000);
+    const listener = (tabId, info) => {
+      if (tabId === tab.id && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timer);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+
+  await new Promise(r => setTimeout(r, 500));
+  return tab.id;
+}
+
+async function closeIncognitoWindow() {
+  const state = await getState();
+  if (state.incognitoWindowId) {
+    try {
+      await chrome.windows.remove(state.incognitoWindowId);
+      console.log(LOG_PREFIX, `Closed incognito window ${state.incognitoWindowId}`);
+    } catch {
+      // Window already closed — ignore
+    }
+    await setState({ incognitoWindowId: null });
+  }
+}
+
+/**
+ * Close all tabs in the tab registry (except mail tabs which preserve login session).
+ * @param {Object} options
+ * @param {boolean} options.keepMail - If true, keep mail tabs open (default false)
+ */
+async function closeAllRegisteredTabs(options = {}) {
+  const { keepMail = false } = options;
+  const registry = await getTabRegistry();
+  for (const [source, entry] of Object.entries(registry)) {
+    if (!entry || !entry.tabId) continue;
+    if (keepMail && (source === 'mail-163' || source === 'qq-mail')) continue;
+    try {
+      await chrome.tabs.remove(entry.tabId);
+      console.log(LOG_PREFIX, `Closed tab: ${source} (${entry.tabId})`);
+    } catch {
+      // Tab already closed
+    }
+  }
+  // Clear registry (keep mail entries if requested)
+  if (keepMail) {
+    const mailSources = ['mail-163', 'qq-mail'];
+    const newRegistry = {};
+    for (const src of mailSources) {
+      if (registry[src]) newRegistry[src] = registry[src];
+    }
+    await setState({ tabRegistry: newRegistry });
+  } else {
+    await setState({ tabRegistry: {} });
+  }
+}
+
+/**
+ * Activate a tab and bring its window to the foreground.
+ */
+async function focusTab(tabId) {
+  const tab = await chrome.tabs.update(tabId, { active: true });
+  if (tab.windowId) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
 }
 
 // ============================================================
@@ -295,6 +471,7 @@ async function handleMessage(message, sender) {
       if (tabId && message.source) {
         await registerTab(message.source, tabId);
         flushCommand(message.source, tabId);
+        notifyContentScriptReady(message.source);
         await addLog(`Content script ready: ${message.source} (tab ${tabId})`);
       }
       return { ok: true };
@@ -366,6 +543,25 @@ async function handleMessage(message, sender) {
     // Side panel data updates
     case 'SAVE_EMAIL': {
       await setState({ email: message.payload.email });
+      return { ok: true };
+    }
+
+    case 'GET_ACCOUNTS': {
+      return { accounts: await getAccounts() };
+    }
+
+    case 'DELETE_ACCOUNT': {
+      const accounts = await deleteAccount(message.payload.index);
+      return { ok: true, accounts };
+    }
+
+    case 'CLEAR_ACCOUNTS': {
+      await clearAccounts();
+      return { ok: true };
+    }
+
+    case 'AUTO_RUN_ACTION': {
+      handleFailureAction(message.payload.action);
       return { ok: true };
     }
 
@@ -513,6 +709,9 @@ async function autoRunLoop(totalRuns) {
   for (let run = 1; run <= totalRuns; run++) {
     autoRunCurrentRun = run;
 
+    // Close all tabs from previous run (keep mail tab to preserve login session)
+    await closeAllRegisteredTabs({ keepMail: true });
+
     // Reset everything at the start of each run (keep VPS/mail settings)
     const prevState = await getState();
     const keepSettings = {
@@ -529,43 +728,52 @@ async function autoRunLoop(totalRuns) {
     await addLog(`=== Auto Run ${run}/${totalRuns} — Phase 1: Get OAuth link & open signup ===`, 'info');
     const status = (phase) => ({ type: 'AUTO_RUN_STATUS', payload: { phase, currentRun: run, totalRuns } });
 
-    try {
-      chrome.runtime.sendMessage(status('running')).catch(() => {});
+    chrome.runtime.sendMessage(status('running')).catch(() => {});
 
-      await executeStepAndWait(1, 2000);
-      await executeStepAndWait(2, 2000);
+    const steps = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let stopped = false;
 
-      // Pause for email
-      await addLog(`=== Run ${run}/${totalRuns} PAUSED: Paste DuckDuckGo email, click Continue ===`, 'warn');
-      chrome.runtime.sendMessage(status('waiting_email')).catch(() => {});
-
-      // Wait for RESUME_AUTO_RUN — sets a promise that resumeAutoRun resolves
-      await waitForResume();
-
-      const state = await getState();
-      if (!state.email) {
-        await addLog('Cannot resume: no email address.', 'error');
-        break;
+    for (const step of steps) {
+      if (step === 3) {
+        await addLog(`=== Run ${run}/${totalRuns} — Phase 2: Register, verify, login, complete ===`, 'info');
+        chrome.runtime.sendMessage(status('running')).catch(() => {});
       }
 
-      await addLog(`=== Run ${run}/${totalRuns} — Phase 2: Register, verify, login, complete ===`, 'info');
-      chrome.runtime.sendMessage(status('running')).catch(() => {});
+      let stepDone = false;
+      while (!stepDone) {
+        try {
+          await executeStepAndWait(step, 2500);
+          stepDone = true;
+        } catch (err) {
+          await addLog(`Run ${run}/${totalRuns} Step ${step} failed: ${err.message}`, 'error');
 
-      await executeStepAndWait(3, 3000);
-      await executeStepAndWait(4, 2000);
-      await executeStepAndWait(5, 3000);
-      await executeStepAndWait(6, 3000);
-      await executeStepAndWait(7, 2000);
-      await executeStepAndWait(8, 2000);
-      await executeStepAndWait(9, 1000);
+          // Pause and wait for user action (5 min timeout -> auto stop)
+          const action = await waitForFailureAction(step, err.message);
 
-      await addLog(`=== Run ${run}/${totalRuns} COMPLETE! ===`, 'ok');
+          if (action === 'retry') {
+            await addLog(`Step ${step}: User chose to retry`, 'info');
+            chrome.runtime.sendMessage(status('running')).catch(() => {});
+            // loop continues, retry the step
+          } else if (action === 'skip') {
+            await addLog(`Step ${step}: User chose to skip`, 'warn');
+            await setStepStatus(step, 'completed');
+            chrome.runtime.sendMessage(status('running')).catch(() => {});
+            stepDone = true;
+          } else {
+            // 'stop' or timeout
+            await addLog(`Auto run stopped by user (or timeout)`, 'warn');
+            chrome.runtime.sendMessage(status('stopped')).catch(() => {});
+            stopped = true;
+            stepDone = true;
+          }
+        }
+      }
 
-    } catch (err) {
-      await addLog(`Run ${run}/${totalRuns} failed: ${err.message}`, 'error');
-      chrome.runtime.sendMessage(status('stopped')).catch(() => {});
-      break; // Stop on error
+      if (stopped) break;
     }
+
+    if (stopped) break;
+    await addLog(`=== Run ${run}/${totalRuns} COMPLETE! ===`, 'ok');
   }
 
   const completedRuns = autoRunCurrentRun;
@@ -597,6 +805,36 @@ async function resumeAutoRun() {
   if (resumeResolver) {
     resumeResolver();
     resumeResolver = null;
+  }
+}
+
+// Promise-based failure intervention mechanism
+let failureActionResolver = null;
+
+function waitForFailureAction(step, errorMsg, timeoutMs = 300000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      failureActionResolver = null;
+      resolve('stop');
+    }, timeoutMs);
+
+    failureActionResolver = (action) => {
+      clearTimeout(timer);
+      failureActionResolver = null;
+      resolve(action);
+    };
+
+    // Notify side panel to show intervention UI
+    chrome.runtime.sendMessage({
+      type: 'AUTO_RUN_PAUSED',
+      payload: { step, error: errorMsg, timeoutMs },
+    }).catch(() => {});
+  });
+}
+
+function handleFailureAction(action) {
+  if (failureActionResolver) {
+    failureActionResolver(action);
   }
 }
 
@@ -639,29 +877,96 @@ async function executeStep2(state) {
 }
 
 // ============================================================
+// Duck Email Auto-Generation
+// ============================================================
+
+async function generateDuckEmailAddress() {
+  const DDG_URL = 'https://duckduckgo.com/email/settings/autofill';
+
+  await addLog('Step 3: Opening DuckDuckGo Email Protection page...');
+  await reuseOrCreateTab('duck-email', DDG_URL);
+
+  // Wait for content script to be ready (critical for 2nd+ run after tab was closed)
+  await addLog('Step 3: Waiting for DDG page to load...');
+  await waitForContentScriptReady('duck-email', 20000);
+
+  // Send generate command and wait for response
+  const result = await sendToContentScript('duck-email', {
+    type: 'GENERATE_DUCK_EMAIL',
+    source: 'background',
+    payload: {},
+  });
+
+  if (result && result.error) {
+    throw new Error(result.error);
+  }
+
+  if (!result || !result.email) {
+    throw new Error('No email returned from DDG page');
+  }
+
+  // Close DDG tab — no longer needed after getting the address
+  const duckTabId = await getTabId('duck-email');
+  if (duckTabId) {
+    try {
+      await chrome.tabs.remove(duckTabId);
+      const registry = await getTabRegistry();
+      registry['duck-email'] = null;
+      await setState({ tabRegistry: registry });
+      await addLog('Step 3: Closed DDG settings tab');
+    } catch (_) { /* tab may already be closed */ }
+  }
+
+  return result.email;
+}
+
+// ============================================================
 // Step 3: Fill Email & Password (via signup-page.js)
 // ============================================================
 
 async function executeStep3(state) {
-  if (!state.email) {
-    throw new Error('No email address. Paste email in Side Panel first.');
+  // Phase 1: Auto-generate duck email
+  let email = state.email; // may already be set if user pasted manually
+
+  if (!email) {
+    try {
+      email = await generateDuckEmailAddress();
+      await setState({ email });
+      // Update side panel email field
+      chrome.runtime.sendMessage({
+        type: 'DATA_UPDATED',
+        payload: { email },
+      }).catch(() => {});
+      await addLog(`Step 3: Auto-generated duck email: ${email}`, 'ok');
+    } catch (err) {
+      await addLog(`Step 3: Duck email auto-generation failed: ${err.message}. Falling back to manual mode.`, 'warn');
+      // Notify side panel to show pause bar
+      chrome.runtime.sendMessage({
+        type: 'AUTO_RUN_STATUS',
+        payload: { phase: 'waiting_email', fallback: true },
+      }).catch(() => {});
+      // Wait for manual email input
+      await waitForResume();
+      const refreshedState = await getState();
+      email = refreshedState.email;
+      if (!email) {
+        throw new Error('No email address. Paste email in Side Panel first.');
+      }
+    }
   }
 
-  // Generate a unique password for this account
+  // Phase 2: Fill signup form
   const password = generatePassword();
   await setState({ password });
 
-  // Save account record
-  const accounts = state.accounts || [];
-  accounts.push({ email: state.email, password, createdAt: new Date().toISOString() });
-  await setState({ accounts });
+  await saveAccount({ email, password, createdAt: new Date().toISOString() });
 
-  await addLog(`Step 3: Filling email ${state.email}, password generated (${password.length} chars)`);
+  await addLog(`Step 3: Filling email ${email}, password generated (${password.length} chars)`);
   await sendToContentScript('signup-page', {
     type: 'EXECUTE_STEP',
     step: 3,
     source: 'background',
-    payload: { email: state.email, password },
+    payload: { email, password },
   });
 }
 
@@ -685,7 +990,7 @@ async function executeStep4(state) {
   const alive = await isTabAlive(mail.source);
   if (alive) {
     const tabId = await getTabId(mail.source);
-    await chrome.tabs.update(tabId, { active: true });
+    await focusTab(tabId);
   } else {
     await reuseOrCreateTab(mail.source, mail.url);
   }
@@ -714,7 +1019,7 @@ async function executeStep4(state) {
     // Switch to signup tab and fill code
     const signupTabId = await getTabId('signup-page');
     if (signupTabId) {
-      await chrome.tabs.update(signupTabId, { active: true });
+      await focusTab(signupTabId);
       await sendToContentScript('signup-page', {
         type: 'FILL_CODE',
         step: 4,
@@ -757,17 +1062,68 @@ async function executeStep6(state) {
     throw new Error('No email. Complete step 3 first.');
   }
 
-  await addLog(`Step 6: Opening OAuth URL for login...`);
-  // Reuse the signup-page tab — navigate it to the OAuth URL
-  await reuseOrCreateTab('signup-page', state.oauthUrl);
+  await addLog(`Step 6: Opening OAuth URL in incognito window for login...`);
+  // Close old signup-page tab (registration is done) and open incognito for login
+  const oldSignupTabId = await getTabId('signup-page');
+  if (oldSignupTabId) {
+    try { await chrome.tabs.remove(oldSignupTabId); } catch {}
+  }
+  await createIncognitoTab('signup-page', state.oauthUrl);
 
-  // signup-page.js will inject (same auth.openai.com domain) and handle login
-  await sendToContentScript('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 6,
-    source: 'background',
-    payload: { email: state.email, password: state.password },
-  });
+  // Phase 1: fill email and submit
+  // After email submit, the page may do a full navigation to a password page,
+  // which kills the content script before sendResponse fires. Use a timeout race.
+  try {
+    await Promise.race([
+      sendToContentScript('signup-page', {
+        type: 'EXECUTE_STEP',
+        step: 6,
+        source: 'background',
+        payload: { email: state.email, password: state.password },
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('phase1_timeout')), 30000)),
+    ]);
+  } catch {
+    // Content script died during page navigation — expected for two-page login flow
+    await addLog('Step 6: Page navigated after email submit, waiting for password page...');
+  }
+
+  // Check if step 6 was already completed (email + password on same page)
+  const stepState = await getState();
+  if (stepState.stepStatuses?.[6] === 'completed') {
+    return; // All done in one page
+  }
+
+  // Phase 2: password page — wait for new content script to be ready, then fill password
+  await addLog('Step 6: Waiting for password page to load...');
+  // Wait for the new content script on the password page to send READY
+  await waitForContentScriptReady('signup-page', 20000);
+
+  // Send password fill command. After the content script fills the password and
+  // clicks submit, the page navigates to the OTP page — which kills the content
+  // script before sendResponse can fire. Use a timeout race so we don't hang.
+  // The actual completion signal is reportComplete(6) from the content script,
+  // which fires BEFORE the submit click.
+  try {
+    await Promise.race([
+      sendToContentScript('signup-page', {
+        type: 'EXECUTE_STEP',
+        step: 6,
+        source: 'background',
+        payload: { email: state.email, password: state.password, phase: 'password' },
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('phase2_timeout')), 30000)),
+    ]);
+  } catch {
+    // Expected: content script dies after password submit (page navigates to OTP).
+    // reportComplete(6) was already sent before the submit click, so step 6 is done.
+    const st = await getState();
+    if (st.stepStatuses?.[6] === 'completed') {
+      await addLog('Step 6: Password submitted, page navigated to verification code page.');
+    } else {
+      throw new Error('Step 6 password phase failed: no completion signal received.');
+    }
+  }
 }
 
 // ============================================================
@@ -781,7 +1137,7 @@ async function executeStep7(state) {
   const alive = await isTabAlive(mail.source);
   if (alive) {
     const tabId = await getTabId(mail.source);
-    await chrome.tabs.update(tabId, { active: true });
+    await focusTab(tabId);
   } else {
     await reuseOrCreateTab(mail.source, mail.url);
   }
@@ -806,10 +1162,10 @@ async function executeStep7(state) {
   if (result && result.code) {
     await addLog(`Step 7: Got login verification code: ${result.code}`);
 
-    // Switch to signup/auth tab and fill code
+    // Switch to signup/auth tab in incognito and bring it to front
     const signupTabId = await getTabId('signup-page');
     if (signupTabId) {
-      await chrome.tabs.update(signupTabId, { active: true });
+      await focusTab(signupTabId);
       await sendToContentScript('signup-page', {
         type: 'FILL_CODE',
         step: 7,
@@ -827,6 +1183,7 @@ async function executeStep7(state) {
 // ============================================================
 
 let webNavListener = null;
+const MAX_PHONE_PAGE_RETRIES = 3;
 
 async function executeStep8(state) {
   if (!state.oauthUrl) {
@@ -843,9 +1200,9 @@ async function executeStep8(state) {
         webNavListener = null;
       }
       setStepStatus(8, 'failed');
-      addLog('Step 8: Localhost redirect not captured after 30s. Check if OAuth authorization completed.', 'error');
-      reject(new Error('Localhost redirect not captured after 30s. Check if OAuth authorization completed.'));
-    }, 30000);
+      addLog('Step 8: Localhost redirect not captured after 120s. Check if OAuth authorization completed.', 'error');
+      reject(new Error('Localhost redirect not captured after 120s. Check if OAuth authorization completed.'));
+    }, 120000);
 
     webNavListener = (details) => {
       if (details.url.startsWith('http://localhost')) {
@@ -854,8 +1211,19 @@ async function executeStep8(state) {
         webNavListener = null;
         clearTimeout(timeout);
 
-        setState({ localhostUrl: details.url }).then(() => {
+        setState({ localhostUrl: details.url }).then(async () => {
           addLog(`Step 8: Captured localhost URL: ${details.url}`, 'ok');
+
+          // Close incognito window — login flow is done
+          await closeIncognitoWindow();
+          addLog('Step 8: Incognito window closed.');
+
+          // Bring VPS panel to front so user can see step 9
+          const vpsTabId = await getTabId('vps-panel');
+          if (vpsTabId && await isTabAlive('vps-panel')) {
+            await focusTab(vpsTabId);
+          }
+
           setStepStatus(8, 'completed');
           notifyStepComplete(8, { localhostUrl: details.url });
           chrome.runtime.sendMessage({
@@ -869,29 +1237,128 @@ async function executeStep8(state) {
 
     chrome.webNavigation.onBeforeNavigate.addListener(webNavListener);
 
-    // After step 7, the auth page shows a consent screen ("使用 ChatGPT 登录到 Codex")
-    // with a "继续" button. We need to click it, which triggers the localhost redirect.
+    // Try clicking "继续", with retry loop for phone page detection
     (async () => {
       try {
-        const signupTabId = await getTabId('signup-page');
-        if (signupTabId) {
-          await chrome.tabs.update(signupTabId, { active: true });
-          await addLog('Step 8: Switching to auth page, clicking "继续" to complete OAuth...');
-          await sendToContentScript('signup-page', {
-            type: 'EXECUTE_STEP',
-            step: 8,
-            source: 'background',
-            payload: {},
-          });
-        } else {
-          await reuseOrCreateTab('signup-page', state.oauthUrl);
-          await addLog('Step 8: Auth tab reopened...');
-          await sendToContentScript('signup-page', {
-            type: 'EXECUTE_STEP',
-            step: 8,
-            source: 'background',
-            payload: {},
-          });
+        for (let attempt = 1; attempt <= MAX_PHONE_PAGE_RETRIES; attempt++) {
+          try {
+            const signupTabId = await getTabId('signup-page');
+            if (signupTabId) {
+              await focusTab(signupTabId);
+              await addLog('Step 8: Switching to auth page, clicking "继续" to complete OAuth...');
+            } else {
+              await createIncognitoTab('signup-page', state.oauthUrl);
+              await addLog('Step 8: Auth tab reopened in incognito...');
+            }
+
+            const step8Result = await sendToContentScript('signup-page', {
+              type: 'EXECUTE_STEP',
+              step: 8,
+              source: 'background',
+              payload: {},
+            });
+            // sendToContentScript returns { error: ... } instead of throwing
+            if (step8Result && step8Result.error) {
+              throw new Error(step8Result.error);
+            }
+            // If no error, step 8 content script succeeded (redirect will be captured by listener)
+            return;
+          } catch (err) {
+            const isRetryable = err.message === 'PHONE_PAGE_DETECTED' || err.message === 'ERROR_PAGE_DETECTED';
+            if (isRetryable && attempt < MAX_PHONE_PAGE_RETRIES) {
+              const reason = err.message === 'PHONE_PAGE_DETECTED' ? 'Phone page' : 'Error page (invalid_state)';
+              await addLog(`Step 8: ${reason} detected (attempt ${attempt}/${MAX_PHONE_PAGE_RETRIES}). Re-opening OAuth to retry login...`, 'warn');
+              await new Promise(r => setTimeout(r, 2000));
+
+              // Re-open OAuth URL in incognito to start a fresh login session
+              await createIncognitoTab('signup-page', state.oauthUrl);
+              await new Promise(r => setTimeout(r, 2000));
+
+              // Re-do login (step 6) — handle two-page flow
+              await addLog('Step 8: Re-logging in (step 6)...');
+              try {
+                await Promise.race([
+                  sendToContentScript('signup-page', {
+                    type: 'EXECUTE_STEP',
+                    step: 6,
+                    source: 'background',
+                    payload: { email: state.email, password: state.password },
+                  }),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('phase1_timeout')), 30000)),
+                ]);
+              } catch {
+                // Content script died during page navigation — expected
+              }
+              await new Promise(r => setTimeout(r, 3000));
+
+              // Check if page navigated to a separate password page
+              const retryStepState = await getState();
+              if (retryStepState.stepStatuses?.[6] !== 'completed') {
+                await addLog('Step 8: Waiting for password page after retry login...');
+                await waitForContentScriptReady('signup-page', 20000);
+                try {
+                  await Promise.race([
+                    sendToContentScript('signup-page', {
+                      type: 'EXECUTE_STEP',
+                      step: 6,
+                      source: 'background',
+                      payload: { email: state.email, password: state.password, phase: 'password' },
+                    }),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('phase2_timeout')), 30000)),
+                  ]);
+                } catch {
+                  // Expected: page navigates after password submit
+                }
+                await new Promise(r => setTimeout(r, 3000));
+              }
+
+              // Re-do verification code if needed (step 7)
+              await addLog('Step 8: Re-fetching login verification code (step 7)...');
+              const mail = getMailConfig(state);
+              const alive = await isTabAlive(mail.source);
+              if (alive) {
+                const mailTabId = await getTabId(mail.source);
+                await focusTab(mailTabId);
+              } else {
+                await reuseOrCreateTab(mail.source, mail.url);
+              }
+
+              const result = await sendToContentScript(mail.source, {
+                type: 'POLL_EMAIL',
+                step: 7,
+                source: 'background',
+                payload: {
+                  filterAfterTimestamp: state.lastEmailTimestamp || state.flowStartTime || 0,
+                  senderFilters: ['openai', 'noreply', 'verify', 'auth', 'chatgpt'],
+                  subjectFilters: ['verify', 'verification', 'code', '验证', 'confirm', 'login'],
+                  maxAttempts: 10,
+                  intervalMs: 3000,
+                  allowSeenAfter: 5, // retry scenario: use seen code after 5 attempts
+                },
+              });
+
+              if (result && result.code) {
+                await addLog(`Step 8: Got retry verification code: ${result.code}`);
+                const retryTabId = await getTabId('signup-page');
+                if (retryTabId) {
+                  await focusTab(retryTabId);
+                  await sendToContentScript('signup-page', {
+                    type: 'FILL_CODE',
+                    step: 7,
+                    source: 'background',
+                    payload: { code: result.code },
+                  });
+                }
+                await new Promise(r => setTimeout(r, 3000));
+              }
+
+              // Now retry step 8 (loop continues)
+              await addLog(`Step 8: Retry attempt ${attempt + 1}...`);
+              await new Promise(r => setTimeout(r, 2000));
+            } else {
+              throw err;
+            }
+          }
         }
       } catch (err) {
         clearTimeout(timeout);
@@ -936,7 +1403,7 @@ async function executeStep9(state) {
       chrome.tabs.onUpdated.addListener(listener);
     });
   } else {
-    await chrome.tabs.update(tabId, { active: true });
+    await focusTab(tabId);
   }
 
   // Inject scripts directly and wait for them to be ready
@@ -954,6 +1421,7 @@ async function executeStep9(state) {
     source: 'background',
     payload: { localhostUrl: state.localhostUrl },
   });
+
 }
 
 // ============================================================

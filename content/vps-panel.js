@@ -98,6 +98,7 @@ async function step1_getOAuthLink() {
   }
 
   log(`Step 1: OAuth URL obtained: ${oauthUrl.slice(0, 80)}...`, 'ok');
+  await sleep(2500);
   reportComplete(1, { oauthUrl });
 }
 
@@ -170,5 +171,6 @@ async function step9_vpsVerify(payload) {
     }
   }
 
+  await sleep(2500);
   reportComplete(9);
 }

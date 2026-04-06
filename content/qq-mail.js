@@ -100,6 +100,7 @@ async function handlePollEmail(step, payload) {
         if (code) {
           const source = useFallback && existingMailIds.has(mailId) ? 'fallback-first-match' : 'new';
           log(`Step ${step}: Code found: ${code} (${source}, subject: ${subject.slice(0, 40)})`, 'ok');
+          await deleteEmail(item, step);
           return { ok: true, code, emailTimestamp: Date.now(), mailId };
         }
       }
@@ -118,6 +119,62 @@ async function handlePollEmail(step, payload) {
     `No new matching email found after ${(maxAttempts * intervalMs / 1000).toFixed(0)}s. ` +
     'Check QQ Mail manually. Email may be delayed or in spam folder.'
   );
+}
+
+// ============================================================
+// Delete Email via Right-Click Context Menu
+// ============================================================
+
+async function deleteEmail(item, step) {
+  try {
+    log(`Step ${step}: Preparing to delete email...`);
+    await sleep(800);
+
+    // Right-click on the mail item to trigger context menu
+    const rect = item.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    item.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, view: window,
+      clientX: x, clientY: y, button: 2,
+    }));
+    log(`Step ${step}: Right-clicked email item, waiting for popup...`);
+
+    // Wait for the popup menu to appear
+    let popup;
+    try {
+      popup = await waitForElement('.xmail-ui-popup-wrap', 3000);
+    } catch {
+      log(`Step ${step}: Context menu popup did not appear, skipping delete`, 'warn');
+      return;
+    }
+    log(`Step ${step}: Popup appeared`);
+    await sleep(800);
+
+    // Find delete button by text content
+    const candidates = popup.querySelectorAll('a, button, div[class*="item"], span, li');
+    let deleteBtn = null;
+    for (const el of candidates) {
+      if (el.textContent.trim().includes('删除') && el.offsetParent !== null) {
+        deleteBtn = el;
+        break;
+      }
+    }
+
+    if (!deleteBtn) {
+      log(`Step ${step}: Delete button not found in popup, skipping`, 'warn');
+      return;
+    }
+
+    log(`Step ${step}: Found delete button, clicking...`);
+    await sleep(800);
+    deleteBtn.click();
+    log(`Step ${step}: Clicked delete button`, 'ok');
+    await sleep(2000);
+    log(`Step ${step}: Email deletion done`);
+  } catch (err) {
+    log(`Step ${step}: Failed to delete email: ${err.message}`, 'warn');
+  }
 }
 
 // ============================================================

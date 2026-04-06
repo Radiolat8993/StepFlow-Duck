@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Multi-Page Automation",
-  "version": "1.1.0",
+  "name": "StepFlow Duck",
+  "version": "2.0.0",
   "description": "Automates multi-step OAuth registration workflow",
   "permissions": [
     "sidePanel",
@@ -14,6 +14,7 @@
   "host_permissions": [
     "<all_urls>"
   ],
+  "incognito": "spanning",
   "background": {
     "service_worker": "background.js"
   },
@@ -45,6 +46,13 @@
       ],
       "js": ["content/utils.js", "content/mail-163.js"],
       "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://duckduckgo.com/email/settings/*"
+      ],
+      "js": ["content/utils.js", "content/duck-email.js"],
       "run_at": "document_idle"
     }
   ],
