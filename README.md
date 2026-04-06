@@ -44,3 +44,7 @@ ChatGPT OAuth 批量注册自动化 Chrome 扩展。
 - 每次注册自动生成随机强密码（14 位，含大小写 + 数字 + 符号）
 - 所有状态存储在 `chrome.storage.session`，浏览器关闭即清除
 - 代码中无硬编码的密码、IP 地址等敏感信息
+
+## 致谢
+
+本项目受 [LINUX DO](https://linux.do/) 社区启发和支持。
